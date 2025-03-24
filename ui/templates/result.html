@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analysis Results - Web Page Analyzer</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Web Page Analyzer</h1>
+        </header>
+        
+        <main>
+            <div class="card">
+                <h2>Analysis Results for <span class="url">{{.URL}}</span></h2>
+                
+                <div class="result-section">
+                    <h3>HTML Version</h3>
+                    <p>{{.Result.HTMLVersion}}</p>
+                </div>
+                
+                <div class="result-section">
+                    <h3>Page Title</h3>
+                    <p>{{.Result.Title}}</p>
+                </div>
+                
+                <div class="result-section">
+                    <h3>Headings</h3>
+                    <ul>
+                        {{range $level, $count := .Result.HeadingCount}}
+                        <li>{{$level}}: {{$count}}</li>
+                        {{else}}
+                        <li>No headings found</li>
+                        {{end}}
+                    </ul>
+                </div>
+                
+                <div class="result-section">
+                    <h3>Links</h3>
+                    <ul>
+                        <li>Internal Links: {{.Result.InternalLinks}}</li>
+                        <li>External Links: {{.Result.ExternalLinks}}</li>
+                        <li>Inaccessible Links: {{.Result.InaccessibleLinks}}</li>
+                    </ul>
+                </div>
+                
+                <div class="result-section">
+                    <h3>Login Form</h3>
+                    <p>{{if .Result.HasLoginForm}}Yes{{else}}No{{end}}</p>
+                </div>
+                
+                <div class="form-actions">
+                    <a href="/" class="btn-secondary">Analyze Another Page</a>
+                </div>
+            </div>
+        </main>
+        
+        <footer>
+            <p>&copy; 2023 Web Page Analyzer</p>
+        </footer>
+    </div>
+</body>
+</html> 

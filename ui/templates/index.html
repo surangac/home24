@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Page Analyzer</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Web Page Analyzer</h1>
+        </header>
+        
+        <main>
+            <div class="card">
+                <form action="/analyze" method="post">
+                    <div class="form-group">
+                        <label for="url">Enter a URL to analyze:</label>
+                        <input type="url" id="url" name="url" placeholder="https://example.com" value="{{.URL}}" required>
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="submit" class="btn-primary">Analyze</button>
+                    </div>
+                    
+                    {{if .Error}}
+                    <div class="error-message">
+                        <p>{{.Error}}</p>
+                    </div>
+                    {{end}}
+                </form>
+            </div>
+        </main>
+        
+        <footer>
+            <p>&copy; 2023 Web Page Analyzer</p>
+        </footer>
+    </div>
+</body>
+</html> 
