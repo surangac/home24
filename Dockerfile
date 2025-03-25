@@ -26,8 +26,8 @@ COPY --from=builder /app/webanalyzer .
 # Copy static files and templates
 COPY --from=builder /app/ui ./ui
 
-# Expose port
-EXPOSE 8080
+# Expose ports for web interface and metrics
+EXPOSE 8080 9090
 
 # Run the binary
 CMD ["./webanalyzer"] 

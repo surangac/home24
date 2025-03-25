@@ -15,7 +15,6 @@ import (
 )
 
 func main() {
-	// Initialize logger
 	log := logger.New()
 	fmt.Println("Web Page Analyzer - Starting...")
 	log.Info("starting web page analyzer application")
@@ -31,9 +30,8 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Start server
 	fmt.Println("Server starting on port 8080...")
-
+	log.Info("server starting on port 8080")
 	// Error channel for server errors
 	serverErrors := make(chan error, 1)
 

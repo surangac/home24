@@ -7,18 +7,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
+
+	"home24/internal/metrics"
 
 	"golang.org/x/net/html"
 )
 
-// This is a struct for analyzing web pages
+// PageAnalyzer helps us dig into web pages and figure out what makes them tick
 type PageAnalyzer struct {
 	log    *slog.Logger
 	client *http.Client
 }
 
-// This function creates a new analyzer
+// New creates a fresh analyzer with some sensible defaults
 func New(log *slog.Logger) *PageAnalyzer {
 	var analyzer = new(PageAnalyzer)
 	analyzer.log = log
@@ -28,81 +31,265 @@ func New(log *slog.Logger) *PageAnalyzer {
 	return analyzer
 }
 
-// This is the struct for the analysis result
+// AnalysisResult holds all the interesting stuff we find on a webpage
 type AnalysisResult struct {
-	HTMLVersion       string         // HTML version of the page
-	Title             string         // Title of the page
-	HeadingCount      map[string]int // Count of headings by type (h1, h2, etc)
-	InternalLinks     int            // Number of internal links
-	ExternalLinks     int            // Number of external links
-	InaccessibleLinks int            // Number of broken links
-	HasLoginForm      bool           // Whether the page has a login form
+	HTMLVersion       string         // What version of HTML this page is using
+	Title             string         // The page title that shows up in browser tabs
+	HeadingCount      map[string]int // How many of each heading type we found (h1, h2, etc)
+	InternalLinks     int            // Links that stay within the same site
+	ExternalLinks     int            // Links that point to other sites
+	InaccessibleLinks int            // Links that seem to be broken or unreachable
+	HasLoginForm      bool           // Whether we found a login form on the page
 }
 
-// This method analyzes a web page and returns the results
+// LinkInfo keeps track of what we know about each link we find
+type LinkInfo struct {
+	URL          string
+	IsInternal   bool
+	IsAccessible bool
+}
+
+// Analyze digs into a webpage and tells us everything we found
 func (a *PageAnalyzer) Analyze(ctx context.Context, urlStr string) (*AnalysisResult, error) {
-	// Log that we're starting analysis
+	// Track how long this analysis takes
+	start := time.Now()
+	defer func() {
+		duration := time.Since(start).Seconds()
+		metrics.AnalysisDuration.Observe(duration)
+	}()
+
+	// Count this analysis request
+	metrics.AnalysisRequests.Inc()
+
+	// Let's start digging into this page
 	a.log.Info("analyzing web page", slog.String("url", urlStr))
 
-	// Create a new HTTP request
+	// Set up our request to fetch the page
 	var req *http.Request
 	var err error
 
 	req, err = http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
 	if err != nil {
+		metrics.AnalysisErrors.Inc()
 		return nil, fmt.Errorf("error creating request: %w", err)
 	}
 
-	// Set a user agent to avoid being blocked
+	// We'll pretend to be a regular browser to avoid getting blocked
 	req.Header.Set("User-Agent", "Mozilla/5.0 WebPageAnalyzer/1.0")
 
-	// Send the request
+	// Go fetch that page for us
 	var resp *http.Response
 	resp, err = a.client.Do(req)
 	if err != nil {
+		metrics.AnalysisErrors.Inc()
 		return nil, fmt.Errorf("error fetching URL: %w", err)
 	}
 
-	// Make sure to close the response body when we're done
+	// Don't forget to clean up after ourselves
 	defer resp.Body.Close()
 
-	// Check if the response was successful
+	// Make sure we got a good response
 	if resp.StatusCode != http.StatusOK {
+		metrics.AnalysisErrors.Inc()
 		return nil, fmt.Errorf("HTTP error: %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 
-	// Parse the HTML
+	// Parse the HTML so we can dig through it
 	var doc *html.Node
 	doc, err = html.Parse(resp.Body)
 	if err != nil {
+		metrics.AnalysisErrors.Inc()
 		return nil, fmt.Errorf("error parsing HTML: %w", err)
 	}
 
-	// Create a new result object
+	// Set up our results container
 	var result = &AnalysisResult{
 		HeadingCount: make(map[string]int),
-		HTMLVersion:  "Unknown", // Default to unknown
+		HTMLVersion:  "Unknown", // We'll try to figure this out later
 	}
 
-	// Get the base URL for resolving relative links
+	// Figure out the base URL so we can make sense of relative links
 	var baseURL *url.URL
 	baseURL, _ = url.Parse(urlStr)
 
-	// Analyze the HTML
-	a.analyzeNode(doc, result, baseURL)
+	// Set up our channels for collecting link info
+	linkChan := make(chan LinkInfo, 100)
 
-	// Check links
-	a.checkLinks(ctx, result, baseURL)
+	// We'll need this to make sure all our goroutines finish up
+	var wg sync.WaitGroup
 
-	// Return the result
+	// Start collecting links in the background
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		a.collectLinks(doc, baseURL, linkChan)
+		close(linkChan)
+	}()
+
+	// Process all those links we found
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		a.processLinks(ctx, linkChan, result)
+	}()
+
+	// Look through the HTML structure
+	a.analyzeNodeParallel(doc, result)
+
+	// Wait for everything to wrap up
+	wg.Wait()
+
+	// Update our metrics with what we found
+	metrics.LinkCounts.WithLabelValues("internal").Set(float64(result.InternalLinks))
+	metrics.LinkCounts.WithLabelValues("external").Set(float64(result.ExternalLinks))
+	metrics.LinkCounts.WithLabelValues("inaccessible").Set(float64(result.InaccessibleLinks))
+
+	for level, count := range result.HeadingCount {
+		metrics.HeadingCounts.WithLabelValues(level).Set(float64(count))
+	}
+
+	if result.HasLoginForm {
+		metrics.LoginFormCount.Inc()
+	}
+
+	metrics.HTMLVersionCount.WithLabelValues(result.HTMLVersion).Inc()
+
 	return result, nil
 }
 
-// This function recursively analyzes an HTML node
-func (a *PageAnalyzer) analyzeNode(n *html.Node, result *AnalysisResult, baseURL *url.URL) {
-	// Check the node type
+// collectLinks digs through the HTML and finds all the links
+func (a *PageAnalyzer) collectLinks(n *html.Node, baseURL *url.URL, linkChan chan<- LinkInfo) {
+	if n.Type == html.ElementNode && n.Data == "a" {
+		for _, attr := range n.Attr {
+			if attr.Key == "href" {
+				var href = attr.Val
+
+				// Skip the boring links that don't go anywhere
+				if href == "" || strings.HasPrefix(href, "javascript:") || strings.HasPrefix(href, "#") {
+					continue
+				}
+
+				// Try to make sense of this link URL
+				var linkURL *url.URL
+				var err error
+				linkURL, err = baseURL.Parse(href)
+				if err != nil {
+					continue
+				}
+
+				// Figure out if this link stays on the same site
+				isInternal := linkURL.Host == "" || linkURL.Host == baseURL.Host
+				linkChan <- LinkInfo{
+					URL:        href,
+					IsInternal: isInternal,
+				}
+			}
+		}
+	}
+
+	// Keep digging through all the nested elements
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		a.collectLinks(c, baseURL, linkChan)
+	}
+}
+
+// processLinks checks all our links to see if they work
+func (a *PageAnalyzer) processLinks(ctx context.Context, linkChan <-chan LinkInfo, result *AnalysisResult) {
+	var wg sync.WaitGroup
+	var mutex sync.Mutex
+	// Don't overwhelm the server with too many requests at once
+	semaphore := make(chan struct{}, 10)
+
+	for link := range linkChan {
+		wg.Add(1)
+		semaphore <- struct{}{} // Grab a slot
+
+		go func(l LinkInfo) {
+			defer wg.Done()
+			defer func() { <-semaphore }() // Release our slot when done
+
+			// Check if this link actually works
+			isAccessible := a.checkLinkAccessibility(ctx, l.URL)
+			a.log.Debug("link check result",
+				slog.String("url", l.URL),
+				slog.Bool("is_internal", l.IsInternal),
+				slog.Bool("is_accessible", isAccessible))
+
+			// Update our counts safely
+			mutex.Lock()
+			if l.IsInternal {
+				result.InternalLinks++
+			} else {
+				result.ExternalLinks++
+			}
+			if !isAccessible {
+				result.InaccessibleLinks++
+			}
+			mutex.Unlock()
+		}(link)
+	}
+
+	wg.Wait()
+}
+
+// checkLinkAccessibility tries to figure out if a link actually works
+func (a *PageAnalyzer) checkLinkAccessibility(ctx context.Context, urlStr string) bool {
+	// First try a quick HEAD request
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, urlStr, nil)
+	if err != nil {
+		a.log.Debug("error creating HEAD request",
+			slog.String("url", urlStr),
+			slog.String("error", err.Error()))
+		return false
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 WebPageAnalyzer/1.0")
+	resp, err := a.client.Do(req)
+	if err != nil {
+		a.log.Debug("error in HEAD request",
+			slog.String("url", urlStr),
+			slog.String("error", err.Error()))
+		return false
+	}
+	defer resp.Body.Close()
+
+	// If HEAD works, we're good to go
+	if resp.StatusCode == http.StatusOK {
+		return true
+	}
+
+	// Some servers don't like HEAD requests, so let's try GET
+	req, err = http.NewRequestWithContext(ctx, http.MethodGet, urlStr, nil)
+	if err != nil {
+		a.log.Debug("error creating GET request",
+			slog.String("url", urlStr),
+			slog.String("error", err.Error()))
+		return false
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 WebPageAnalyzer/1.0")
+	resp, err = a.client.Do(req)
+	if err != nil {
+		a.log.Debug("error in GET request",
+			slog.String("url", urlStr),
+			slog.String("error", err.Error()))
+		return false
+	}
+	defer resp.Body.Close()
+
+	// Any 2xx status means the link works
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+// analyzeNodeParallel digs through the HTML structure and finds interesting stuff
+func (a *PageAnalyzer) analyzeNodeParallel(n *html.Node, result *AnalysisResult) {
+	var wg sync.WaitGroup
+	var mutex sync.Mutex
+
+	// Look at what we found in this node
 	if n.Type == html.DoctypeNode {
-		// This is the doctype, so we can determine the HTML version
+		mutex.Lock()
+		// This tells us what version of HTML we're dealing with
 		var doctype = strings.ToLower(n.Data)
 		if strings.Contains(doctype, "html 5") || doctype == "html" {
 			result.HTMLVersion = "HTML 5"
@@ -115,80 +302,69 @@ func (a *PageAnalyzer) analyzeNode(n *html.Node, result *AnalysisResult, baseURL
 		} else {
 			result.HTMLVersion = "Unknown"
 		}
+		mutex.Unlock()
 	} else if n.Type == html.ElementNode {
-		// This is an element node
-
-		// Check if it's a heading
+		mutex.Lock()
+		// Count up all the headings we find
 		if strings.HasPrefix(n.Data, "h") && len(n.Data) == 2 {
 			var headingLevel = n.Data
 			result.HeadingCount[headingLevel]++
 		}
 
-		// Check if it's the title
+		// Grab the page title if we find it
 		if n.Data == "title" && n.FirstChild != nil {
 			result.Title = n.FirstChild.Data
 		}
+		mutex.Unlock()
 
-		// Check if it's a form
+		// If we found a form, let's check it out
 		if n.Data == "form" {
-			// Check the form attributes
-			for _, a := range n.Attr {
-				if a.Key == "action" {
-					// Check if the action suggests it's a login form
-					if strings.Contains(a.Val, "login") || strings.Contains(a.Val, "signin") {
-						result.HasLoginForm = true
-						break
-					}
-				}
-			}
-
-			// If we didn't determine it's a login form from the action, check for password inputs
-			if result.HasLoginForm == false {
-				result.HasLoginForm = a.containsPasswordInput(n)
-			}
+			wg.Add(1)
+			go func(node *html.Node) {
+				defer wg.Done()
+				a.analyzeForm(node, result, &mutex)
+			}(n)
 		}
+	}
 
-		// Check if it's a link
-		if n.Data == "a" {
-			for _, attr := range n.Attr {
-				if attr.Key == "href" {
-					var href = attr.Val
+	// Keep looking through all the nested elements
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		wg.Add(1)
+		go func(child *html.Node) {
+			defer wg.Done()
+			a.analyzeNodeParallel(child, result)
+		}(c)
+	}
 
-					// Skip empty links, javascript and anchor links
-					if href == "" || strings.HasPrefix(href, "javascript:") || strings.HasPrefix(href, "#") {
-						continue
-					}
+	wg.Wait()
+}
 
-					// Parse the link URL
-					var linkURL *url.URL
-					var err error
-					linkURL, err = baseURL.Parse(href)
-					if err != nil {
-						continue
-					}
-
-					// Determine if it's an internal or external link
-					if linkURL.Host == "" || linkURL.Host == baseURL.Host {
-						// Internal link
-						result.InternalLinks = result.InternalLinks + 1
-					} else {
-						// External link
-						result.ExternalLinks = result.ExternalLinks + 1
-					}
-				}
+// analyzeForm figures out if this form is for logging in
+func (a *PageAnalyzer) analyzeForm(n *html.Node, result *AnalysisResult, mutex *sync.Mutex) {
+	// Check what this form is supposed to do
+	for _, a := range n.Attr {
+		if a.Key == "action" {
+			// Look for hints in the form's action URL
+			if strings.Contains(a.Val, "login") || strings.Contains(a.Val, "signin") {
+				mutex.Lock()
+				result.HasLoginForm = true
+				mutex.Unlock()
+				return
 			}
 		}
 	}
 
-	// Process all child nodes
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		a.analyzeNode(c, result, baseURL)
+	// If we didn't figure it out from the action, look for password fields
+	if !result.HasLoginForm {
+		mutex.Lock()
+		result.HasLoginForm = a.containsPasswordInput(n)
+		mutex.Unlock()
 	}
 }
 
-// This function checks if a form contains a password input
+// containsPasswordInput checks if this form has a password field
 func (a *PageAnalyzer) containsPasswordInput(n *html.Node) bool {
-	// Check if this node is an input with type="password"
+	// Is this a password input field?
 	if n.Type == html.ElementNode && n.Data == "input" {
 		for _, attr := range n.Attr {
 			if attr.Key == "type" && attr.Val == "password" {
@@ -197,7 +373,7 @@ func (a *PageAnalyzer) containsPasswordInput(n *html.Node) bool {
 		}
 	}
 
-	// Check all child nodes
+	// Look through all the nested elements
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
 		var hasPassword = a.containsPasswordInput(c)
 		if hasPassword == true {
@@ -205,14 +381,6 @@ func (a *PageAnalyzer) containsPasswordInput(n *html.Node) bool {
 		}
 	}
 
-	// If we get here, no password input was found
+	// No password field found here
 	return false
-}
-
-// This function checks if links are accessible
-func (a *PageAnalyzer) checkLinks(ctx context.Context, result *AnalysisResult, baseURL *url.URL) {
-	// For simplicity, we're just going to estimate that 10% of links are inaccessible
-	// In a real application, we would actually check each link
-	var totalLinks = result.InternalLinks + result.ExternalLinks
-	result.InaccessibleLinks = totalLinks / 10
 }

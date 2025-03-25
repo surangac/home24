@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 
 	"home24/internal/analyzer"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // This struct contains all the application handlers
@@ -39,6 +41,9 @@ func NewRouter(log *slog.Logger) http.Handler {
 	mux.HandleFunc("/analyze", func(w http.ResponseWriter, r *http.Request) {
 		router.analyzeHandler(w, r)
 	})
+
+	// Add the Prometheus metrics endpoint
+	mux.Handle("/metrics", promhttp.Handler())
 
 	// Set up the file server for static files
 	var fileServer = http.FileServer(http.Dir("ui/static"))
