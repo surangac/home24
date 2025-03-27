@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Analysis Results - Web Page Analyzer</title>
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/css/styles.css">
 </head>
 <body>
     <div class="container">
@@ -14,7 +14,7 @@
         
         <main>
             <div class="card">
-                <h2>Analysis Results for <span class="url">{{.URL}}</span></h2>
+                <h2>Analysis Results for <span class="url">{{.Result.URL}}</span></h2>
                 
                 <div class="result-section">
                     <h3>HTML Version</h3>
@@ -29,7 +29,7 @@
                 <div class="result-section">
                     <h3>Headings</h3>
                     <ul>
-                        {{range $level, $count := .Result.HeadingCount}}
+                        {{range $level, $count := .Result.Headings}}
                         <li>{{$level}}: {{$count}}</li>
                         {{else}}
                         <li>No headings found</li>
@@ -40,9 +40,19 @@
                 <div class="result-section">
                     <h3>Links</h3>
                     <ul>
-                        <li>Internal Links: {{.Result.InternalLinks}}</li>
-                        <li>External Links: {{.Result.ExternalLinks}}</li>
-                        <li>Inaccessible Links: {{.Result.InaccessibleLinks}}</li>
+                        {{$internalCount := 0}}
+                        {{$externalCount := 0}}
+                        {{range .Result.Links}}
+                            {{if .IsInternal}}
+                                {{$internalCount = add $internalCount 1}}
+                            {{else}}
+                                {{$externalCount = add $externalCount 1}}
+                            {{end}}
+                        {{end}}
+                        <li>Internal Links: {{$internalCount}}</li>
+                        <li>External Links: {{$externalCount}}</li>
+                        <li>Accessible Links: {{.Result.AccessibleLinks}}</li>
+                        <li>Inaccessible Links: {{sub (len .Result.Links) .Result.AccessibleLinks}}</li>
                     </ul>
                 </div>
                 

@@ -2,7 +2,7 @@
 
 # Build variables
 BINARY_NAME=webanalyzer
-MAIN_PATH=./cmd/api
+MAIN_PATH=./cmd/analyzer
 
 # Build the application
 build:

@@ -13,7 +13,7 @@ RUN go mod download
 COPY . .
 
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o webanalyzer ./cmd/api
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o webanalyzer ./cmd/analyzer
 
 # Use a minimal image for the final stage
 FROM alpine:latest
@@ -23,8 +23,9 @@ WORKDIR /app
 # Copy binary from builder stage
 COPY --from=builder /app/webanalyzer .
 
-# Copy static files and templates
-COPY --from=builder /app/ui ./ui
+# Copy templates and CSS files
+COPY --from=builder /app/ui/templates ./ui/templates
+COPY --from=builder /app/ui/css ./ui/css
 
 # Expose ports for web interface and metrics
 EXPOSE 8080 9090

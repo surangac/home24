@@ -2,10 +2,8 @@ package analyzer
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -15,8 +13,8 @@ import (
 
 // Test create a new analyzer
 func TestNew(t *testing.T) {
-	var log = slog.New(slog.NewTextHandler(os.Stdout, nil))
-	var analyzer = New(log)
+	var config = DefaultConfig()
+	var analyzer = NewDefaultPageAnalyzer(&config)
 
 	if analyzer == nil {
 		t.Fatal("expected analyzer to be non-nil")
@@ -67,8 +65,8 @@ func TestAnalyzeParallel(t *testing.T) {
 	}))
 	defer errorServer.Close()
 
-	var log = slog.New(slog.NewTextHandler(os.Stdout, nil))
-	var analyzer = New(log)
+	var config = DefaultConfig()
+	var analyzer = NewDefaultPageAnalyzer(&config)
 
 	// Test with context timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -90,22 +88,31 @@ func TestAnalyzeParallel(t *testing.T) {
 	}
 
 	// Test heading counts
-	if result.HeadingCount["h1"] != 1 {
-		t.Errorf("Expected 1 h1, got %d", result.HeadingCount["h1"])
+	if result.Headings["h1"] != 1 {
+		t.Errorf("Expected 1 h1, got %d", result.Headings["h1"])
 	}
-	if result.HeadingCount["h2"] != 2 {
-		t.Errorf("Expected 2 h2, got %d", result.HeadingCount["h2"])
+	if result.Headings["h2"] != 2 {
+		t.Errorf("Expected 2 h2, got %d", result.Headings["h2"])
 	}
-	if result.HeadingCount["h3"] != 1 {
-		t.Errorf("Expected 1 h3, got %d", result.HeadingCount["h3"])
+	if result.Headings["h3"] != 1 {
+		t.Errorf("Expected 1 h3, got %d", result.Headings["h3"])
 	}
 
 	// Test link counting
-	if result.InternalLinks != 2 {
-		t.Errorf("Expected 2 internal links, got %d", result.InternalLinks)
+	var internalCount = 0
+	var externalCount = 0
+	for _, link := range result.Links {
+		if link.IsInternal {
+			internalCount++
+		} else {
+			externalCount++
+		}
 	}
-	if result.ExternalLinks != 1 {
-		t.Errorf("Expected 1 external link, got %d", result.ExternalLinks)
+	if internalCount != 2 {
+		t.Errorf("Expected 2 internal links, got %d", internalCount)
+	}
+	if externalCount != 1 {
+		t.Errorf("Expected 1 external link, got %d", externalCount)
 	}
 
 	// Test login form detection
@@ -158,10 +165,8 @@ func TestParallelLinkProcessing(t *testing.T) {
 	}))
 	defer testServer.Close()
 
-	var log = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelDebug,
-	}))
-	var analyzer = New(log)
+	var config = DefaultConfig()
+	var analyzer = NewDefaultPageAnalyzer(&config)
 
 	// Test with a longer timeout to ensure all links are checked
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -173,11 +178,17 @@ func TestParallelLinkProcessing(t *testing.T) {
 	}
 
 	// Verify link counts
-	if result.ExternalLinks != 5 {
-		t.Errorf("Expected 5 external links, got %d", result.ExternalLinks)
+	var externalCount = 0
+	for _, link := range result.Links {
+		if !link.IsInternal {
+			externalCount++
+		}
 	}
-	if result.InaccessibleLinks != 1 {
-		t.Errorf("Expected 1 inaccessible link, got %d", result.InaccessibleLinks)
+	if externalCount != 5 {
+		t.Errorf("Expected 5 external links, got %d", externalCount)
+	}
+	if len(result.Links)-result.AccessibleLinks != 1 {
+		t.Errorf("Expected 1 inaccessible link, got %d", len(result.Links)-result.AccessibleLinks)
 	}
 }
 
@@ -191,13 +202,16 @@ func TestConcurrentFormAnalysis(t *testing.T) {
 		<form action="/login">
 			<input type="text" name="username">
 			<input type="password" name="password">
+			<button type="submit">Login</button>
 		</form>
 		<form action="/signup">
 			<input type="text" name="email">
 			<input type="password" name="password">
+			<button type="submit">Sign Up</button>
 		</form>
 		<form action="/search">
 			<input type="text" name="query">
+			<button type="submit">Search</button>
 		</form>
 	</body>
 	</html>
@@ -210,8 +224,8 @@ func TestConcurrentFormAnalysis(t *testing.T) {
 	}))
 	defer server.Close()
 
-	var log = slog.New(slog.NewTextHandler(os.Stdout, nil))
-	var analyzer = New(log)
+	var config = DefaultConfig()
+	var analyzer = NewDefaultPageAnalyzer(&config)
 
 	var result, err = analyzer.Analyze(context.Background(), server.URL)
 	if err != nil {
@@ -226,8 +240,8 @@ func TestConcurrentFormAnalysis(t *testing.T) {
 
 // Test error handling
 func TestAnalyzeError(t *testing.T) {
-	var log = slog.New(slog.NewTextHandler(os.Stdout, nil))
-	var analyzer = New(log)
+	var config = DefaultConfig()
+	var analyzer = NewDefaultPageAnalyzer(&config)
 
 	// Test with invalid URL
 	var _, err = analyzer.Analyze(context.Background(), "http://invalid-url-that-does-not-exist.example")

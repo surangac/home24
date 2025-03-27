@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"home24/internal/config"
 	"home24/internal/handlers"
 	"home24/pkg/logger"
 )
@@ -19,24 +20,35 @@ func main() {
 	fmt.Println("Web Page Analyzer - Starting...")
 	log.Info("starting web page analyzer application")
 
-	// Create server
-	port := ":8080"
-	router := handlers.NewRouter(log)
-	srv := &http.Server{
-		Addr:         port,
-		Handler:      router,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  120 * time.Second,
+	// Load configuration
+	configPath := os.Getenv("CONFIG_PATH")
+	if configPath == "" {
+		configPath = "config/application.yaml"
 	}
 
-	fmt.Println("Server starting on port 8080...")
-	log.Info("server starting on port 8080")
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		log.Error("failed to load configuration", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+
+	// Create server
+	router := handlers.NewRouter(log)
+	srv := &http.Server{
+		Addr:         ":" + cfg.Server.Port,
+		Handler:      router,
+		ReadTimeout:  parseDuration(cfg.Server.ReadTimeout),
+		WriteTimeout: parseDuration(cfg.Server.WriteTimeout),
+		IdleTimeout:  parseDuration(cfg.Server.IdleTimeout),
+	}
+
+	fmt.Printf("Server starting on port %s...\n", cfg.Server.Port)
+	log.Info("server starting", slog.String("port", cfg.Server.Port))
 	// Error channel for server errors
 	serverErrors := make(chan error, 1)
 
 	go func() {
-		log.Info("starting server", slog.String("port", port))
+		log.Info("starting server", slog.String("port", cfg.Server.Port))
 		err := srv.ListenAndServe()
 		if err != nil {
 			serverErrors <- err
@@ -69,4 +81,14 @@ func main() {
 
 	log.Info("server exited properly")
 	fmt.Println("Server shutdown complete")
+}
+
+// parseDuration parses a duration string (e.g., "10s", "30s", "120s")
+func parseDuration(s string) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		// Return a default duration if parsing fails
+		return 10 * time.Second
+	}
+	return d
 }
