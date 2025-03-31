@@ -1,7 +1,7 @@
 .PHONY: build run test docker-build docker-run clean
 
 # Build variables
-BINARY_NAME=webanalyzer
+BINARY_NAME=analyzer
 MAIN_PATH=./cmd/analyzer
 
 # Build the application

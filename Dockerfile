@@ -1,34 +1,39 @@
-FROM golang:1.21-alpine AS builder
+# Build stage
+FROM golang:1.22-alpine AS builder
 
+# Install git and build dependencies
+RUN apk add --no-cache git
+
+# Set working directory
 WORKDIR /app
 
-# Copy go.mod and go.sum
-COPY go.mod ./
-COPY go.sum ./
-
-# Download dependencies
-RUN go mod download
-
-# Copy source code
+# Copy all source code
 COPY . .
 
-# Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o webanalyzer ./cmd/analyzer
+# Explicitly downgrade dependencies and tidy
+RUN go mod edit -go=1.22 && \
+    go get golang.org/x/net@v0.17.0 && \
+    go get github.com/cespare/xxhash/v2@v2.2.0 && \
+    go mod tidy
 
-# Use a minimal image for the final stage
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -o analyzer cmd/analyzer/main.go
+
+# Final stage
 FROM alpine:latest
+
+# Install CA certificates for HTTPS requests
+RUN apk --no-cache add ca-certificates
 
 WORKDIR /app
 
-# Copy binary from builder stage
-COPY --from=builder /app/webanalyzer .
+# Copy binary and necessary files from builder
+COPY --from=builder /app/analyzer .
+COPY --from=builder /app/config ./config
+COPY --from=builder /app/ui ./ui
 
-# Copy templates and CSS files
-COPY --from=builder /app/ui/templates ./ui/templates
-COPY --from=builder /app/ui/css ./ui/css
+# Expose port
+EXPOSE 8080
 
-# Expose ports for web interface and metrics
-EXPOSE 8080 9090
-
-# Run the binary
-CMD ["./webanalyzer"] 
+# Run the application
+CMD ["./analyzer"]

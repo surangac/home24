@@ -1,0 +1,36 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Dependencies
+vendor/
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Documentation
+README.md
+LICENSE
+
+# Test files
+*_test.go
+
+# Temporary files
+*.tmp
+*.temp 
